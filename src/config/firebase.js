@@ -25,4 +25,18 @@ const db = admin.database();
 const auth = admin.auth();
 const bucket = admin.storage().bucket();
 
-module.exports = { db, auth, bucket };
+const downloadFile = async (fileUrl) => {
+  try {
+    const urlParts = fileUrl.split('/');
+    const filePath = decodeURIComponent(urlParts.slice(4).join('/'));
+
+    const file = bucket.file(filePath);
+    const data = await file.download();
+    return data[0];
+  } catch (error) {
+    console.error('Error downloading file from Firebase:', error);
+    throw error;
+  }
+};
+
+module.exports = { db, auth, bucket, downloadFile };

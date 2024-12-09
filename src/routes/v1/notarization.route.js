@@ -76,13 +76,17 @@ router.route('/getStatusById/:documentId').get(notarizationController.getDocumen
 
 router.route('/getDocumentByRole').get(auth('getDocumentsByRole'), notarizationController.getDocumentByRole);
 
-router
-  .route('/forwardDocumentStatus/:documentId')
-  .patch(
-    auth('forwardDocumentStatus'),
-    validate(notarizationValidation.forwardDocumentStatus),
-    notarizationController.forwardDocumentStatus
-  );
+router.route('/forwardDocumentStatus/:documentId').patch(
+  auth('forwardDocumentStatus'),
+  upload.array('files'),
+  (req, res, next) => {
+    const files = req.files || [];
+    req.body.files = files;
+    next();
+  },
+  validate(notarizationValidation.forwardDocumentStatus),
+  notarizationController.forwardDocumentStatus
+);
 
 router.route('/getAllNotarization').get(auth('getAllNotarizations'), notarizationController.getAllNotarizations);
 
@@ -330,7 +334,6 @@ router
  *   "500":
  *    $ref: '#/components/responses/InternalServerError'
  */
-
 /**
  * @swagger
  * /notarization/forwardDocumentStatus/{documentId}:
@@ -345,22 +348,27 @@ router
  *         required: true
  *         schema:
  *           type: string
- *         description: ID of the document to forward status
+ *         description: ID of the document to update status
  *     requestBody:
  *       required: true
  *       content:
- *         application/json:
+ *         multipart/form-data:
  *           schema:
  *             type: object
  *             properties:
  *               action:
  *                 type: string
- *                 description: The action to perform on the document (accept or reject)
- *                 example: accept
+ *                 enum: [accept, reject]
+ *                 description: The action to perform on the document
  *               feedback:
  *                 type: string
  *                 description: Feedback for rejecting the document (required if action is 'reject')
- *                 example: "The document is missing necessary information."
+ *               files:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *                   format: binary
+ *                 description: Output files to be uploaded
  *     responses:
  *       "200":
  *         description: Successfully updated the document status
@@ -371,52 +379,31 @@ router
  *               properties:
  *                 message:
  *                   type: string
- *                   example: "Document status updated to digitalSignature"
  *                 documentId:
  *                   type: string
- *                   example: "66f462fa57b33d48e47ab55f"
+ *                 outputFiles:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       filename:
+ *                         type: string
+ *                       firebaseUrl:
+ *                         type: string
+ *                       transactionHash:
+ *                         type: string
+ *                         nullable: true
+ *                       uploadedAt:
+ *                         type: string
+ *                         format: date-time
  *       "400":
- *         description: Bad request
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 code:
- *                   type: integer
- *                   example: 400
- *                 message:
- *                   type: string
- *                   example: "feedBack is required for rejected status"
+ *         $ref: '#/components/responses/BadRequest'
  *       "401":
- *         description: Unauthorized
  *         $ref: '#/components/responses/Unauthorized'
  *       "403":
- *         description: Forbidden
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 code:
- *                   type: integer
- *                   example: 403
- *                 message:
- *                   type: string
- *                   example: "You do not have permission to access these documents"
+ *         $ref: '#/components/responses/Forbidden'
  *       "404":
- *         description: Document not found
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 code:
- *                   type: integer
- *                   example: 404
- *                 message:
- *                   type: string
- *                   example: "Document not found"
+ *         $ref: '#/components/responses/NotFound'
  *       "500":
  *         $ref: '#/components/responses/InternalServerError'
  */

@@ -50,6 +50,7 @@
   "dependencies": {
     "@google/generative-ai": "^0.19.0",
     "@payos/node": "^1.0.10",
+    "@pinata/sdk": "^2.1.0",
     "@railway/cli": "^3.17.10",
     "alchemy-sdk": "^3.4.1",
     "axios": "^1.7.7",
@@ -58,6 +59,7 @@
     "cors": "^2.8.5",
     "cross-env": "^7.0.0",
     "dotenv": "^10.0.0",
+    "ethers": "^6.13.4",
     "express": "^4.17.1",
     "express-mongo-sanitize": "^2.0.0",
     "express-rate-limit": "^5.0.0",

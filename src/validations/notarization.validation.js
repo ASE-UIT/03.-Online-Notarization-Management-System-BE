@@ -52,8 +52,9 @@ const forwardDocumentStatus = {
     feedback: Joi.string().when('action', {
       is: 'reject',
       then: Joi.required(),
-      otherwise: Joi.optional(), // Changed from Joi.forbidden() to Joi.optional()
+      otherwise: Joi.optional(),
     }),
+    files: Joi.array().items(Joi.object()).optional(),
   }),
 };
 

@@ -111,6 +111,30 @@ const documentSchema = new mongoose.Schema(
       type: Number,
       required: true,
     },
+    output: [
+      {
+        filename: {
+          type: String,
+          required: true,
+          trim: true,
+        },
+        firebaseUrl: {
+          type: String,
+          required: true,
+          trim: true,
+        },
+        transactionHash: {
+          type: String,
+          required: false,
+          default: null,
+        },
+        uploadedAt: {
+          type: Date,
+          required: true,
+          default: Date.now,
+        },
+      },
+    ],
   },
   {
     timestamps: true,

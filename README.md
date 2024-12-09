@@ -127,11 +127,23 @@ VIETQR_URL=YOUR_VIETQR_URL
 # Docker
 DOCKER_USERNAME=YOUR_DOCKER_USERNAME
 DOCKER_PASSWORD=YOUR_DOCKER_PASSWORD
+
+# Alchemy
+ALCHEMY_API_KEY=YOUR_ALCHEMY_API_KEY
+PRIVATE_KEY=YOUR_ALCHEMY_PRIVATE_KEY
+
+# Smart contract
+CONTRACT_ADDRESS=YOUR_CONTRACT_ADDRESS
+
+# Pinata
+PINATA_API_KEY=YOUR_PINATA_API_KEY
+PINATA_SECRET_KEY=YOUR_PINATA_SECRET_KEY
+
 ```
 
 ## API Documentation
 
-The API documentation can be accessed at `/api-docs`. You can view the list of available APIs and their specifications by running the server and visiting `http://localhost:3000/v1/docs` in your browser.
+The API documentation can be accessed at `/v1/docs`. You can view the list of available APIs and their specifications by running the server and visiting `http://localhost:3000/v1/docs` in your browser.
 
 ## Testing
 

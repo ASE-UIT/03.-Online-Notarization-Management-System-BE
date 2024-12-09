@@ -4,10 +4,11 @@ const { ObjectId } = require('mongoose').Types;
 const emailService = require('./email.service');
 const { Document, StatusTracking, ApproveHistory, NotarizationService, NotarizationField } = require('../models');
 const ApiError = require('../utils/ApiError');
-const { bucket } = require('../config/firebase');
+const { bucket, downloadFile } = require('../config/firebase');
 const RequestSignature = require('../models/requestSignature.model');
 const { payOS } = require('../config/payos');
 const Payment = require('../models/payment.model');
+const { uploadToIPFS, mintDocumentNFT } = require('../config/blockchain');
 
 const generateOrderCode = () => {
   const MAX_SAFE_INTEGER = 9007199254740991;
@@ -311,15 +312,19 @@ const getDocumentByRole = async ({ status, limit = 10, page = 1 }) => {
   }
 };
 
-const forwardDocumentStatus = async (documentId, action, role, userId, feedback) => {
+const forwardDocumentStatus = async (documentId, action, role, userId, feedback, files) => {
   try {
     const validStatuses = ['pending', 'processing', 'digitalSignature', 'completed'];
     const roleStatusMap = {
       notary: ['pending', 'processing', 'digitalSignature'],
     };
 
-    // Fetch current status once and reuse
-    const currentStatus = await StatusTracking.findOne({ documentId }, 'status');
+    // Fetch current status and document
+    const [currentStatus, document] = await Promise.all([
+      StatusTracking.findOne({ documentId }, 'status'),
+      Document.findById(documentId),
+    ]);
+
     if (!currentStatus) {
       throw new ApiError(httpStatus.NOT_FOUND, 'Document status not found');
     }
@@ -329,13 +334,37 @@ const forwardDocumentStatus = async (documentId, action, role, userId, feedback)
       throw new ApiError(httpStatus.FORBIDDEN, 'You do not have permission to access these documents');
     }
 
-    // Validate action and handle feedback requirements
+    // Handle files upload if provided
+    let outputFiles = [];
+    if (files && files.length > 0) {
+      const fileUrls = await Promise.all(files.map((file) => uploadFileToFirebase(file, 'outputs', documentId)));
+
+      outputFiles = files.map((file, index) => ({
+        filename: `${Date.now()}-${file.originalname}`,
+        firebaseUrl: fileUrls[index],
+        transactionHash: null, // Reserved for future blockchain integration
+        uploadedAt: new Date(),
+      }));
+
+      await Document.findByIdAndUpdate(
+        documentId,
+        {
+          $push: {
+            output: {
+              $each: outputFiles,
+            },
+          },
+        },
+        { new: true }
+      );
+    }
+
+    // Determine new status
     let newStatus;
     if (action === 'accept') {
       if (currentStatus.status === 'rejected') {
         throw new ApiError(httpStatus.BAD_REQUEST, 'Document already been rejected');
       }
-
       const currentStatusIndex = validStatuses.indexOf(currentStatus.status);
 
       // Disallow forwarding from 'digitalSignature' to 'completed'
@@ -356,7 +385,6 @@ const forwardDocumentStatus = async (documentId, action, role, userId, feedback)
     } else {
       throw new ApiError(httpStatus.BAD_REQUEST, 'Invalid action provided');
     }
-
     if (newStatus === 'digitalSignature') {
       const newRequestSignature = new RequestSignature({
         documentId,
@@ -384,14 +412,14 @@ const forwardDocumentStatus = async (documentId, action, role, userId, feedback)
     });
     await approveHistory.save();
 
-    // Prepare update data
+    // Update status
     const updateData = {
       status: newStatus,
       updatedAt: new Date(),
-      ...(feedback && { feedback }), // Only include feedback if it exists
+      ...(feedback && { feedback }),
     };
 
-    // Fetch email in parallel with approve history save
+    // Update status and send email
     const [email] = await Promise.all([
       Document.findOne({ _id: documentId }, 'requesterInfo.email'),
       StatusTracking.updateOne({ documentId }, updateData),
@@ -401,7 +429,6 @@ const forwardDocumentStatus = async (documentId, action, role, userId, feedback)
       throw new ApiError(httpStatus.NOT_FOUND, 'Email not found');
     }
 
-    // Send email notification
     await emailService.sendDocumentStatusUpdateEmail(
       email.requesterInfo.email,
       documentId,
@@ -413,6 +440,7 @@ const forwardDocumentStatus = async (documentId, action, role, userId, feedback)
     return {
       message: `Document status updated to ${newStatus}`,
       documentId,
+      outputFiles: outputFiles.length > 0 ? outputFiles : undefined,
     };
   } catch (error) {
     if (error instanceof ApiError) {
@@ -447,9 +475,7 @@ const getApproveHistory = async (userId) => {
           createdDate: 1,
           beforeStatus: 1,
           afterStatus: 1,
-          'document.notarizationField.name': 1,
-          'document.notarizationService.name': 1,
-          'document.requesterInfo.fullName': 1,
+          document: 1,
         },
       },
       {
@@ -463,13 +489,13 @@ const getApproveHistory = async (userId) => {
 
     return history.map((record) => ({
       _id: record._id,
-      documentId: record.documentId,
       createdDate: record.createdDate,
       beforeStatus: record.beforeStatus,
-      afterStatus: record.afterStatus,
-      notarizationFieldName: record.document.notarizationField.name,
-      notarizationServiceName: record.document.notarizationService.name,
-      requesterName: record.document.requesterInfo.fullName,
+      status: record.afterStatus,
+      documentId: {
+        id: record.document._id,
+        ...record.document,
+      },
     }));
   } catch (error) {
     if (error instanceof ApiError) {
@@ -578,32 +604,53 @@ const approveSignatureByNotary = async (documentId, userId) => {
     if (!ObjectId.isValid(userId)) {
       throw new ApiError(httpStatus.BAD_REQUEST, 'Invalid user ID');
     }
+
+    // Check document status
     const statusTracking = await StatusTracking.findOne({ documentId });
-    // Check if the document is in the correct status
     if (statusTracking.status !== 'digitalSignature') {
       throw new ApiError(httpStatus.CONFLICT, 'Document is not ready for digital signature');
     }
 
+    // Verify signature request
     const requestSignature = await RequestSignature.findOne({ documentId });
     if (!requestSignature) {
-      throw new ApiError(httpStatus.NOT_FOUND, 'Signature request not found. User has not approved the document yet');
+      throw new ApiError(httpStatus.NOT_FOUND, 'Signature request not found');
     }
-
     if (!requestSignature.approvalStatus.user.approved) {
-      throw new ApiError(httpStatus.CONFLICT, 'Cannot approve. User has not approved the document yet');
+      throw new ApiError(httpStatus.CONFLICT, 'User has not approved the document yet');
     }
 
+    // Retrieve document
     const document = await Document.findById(documentId);
     if (!document) {
       throw new ApiError(httpStatus.NOT_FOUND, 'Document not found');
     }
-
-    // Check if the document has already been paid
     if (document.payment) {
       throw new ApiError(httpStatus.BAD_REQUEST, 'Document has already been paid');
     }
 
-    // Create a new payment object
+    // Mint NFTs for output files
+    if (document.output && document.output.length > 0) {
+      for (const outputFile of document.output) {
+        // Download file from storage
+        const fileBuffer = await downloadFile(outputFile.firebaseUrl);
+        // Upload to IPFS
+        const ipfsUrl = await uploadToIPFS(fileBuffer, outputFile.filename);
+
+        // Mint NFT
+        const nftData = await mintDocumentNFT(ipfsUrl);
+
+        // Update output file with transaction details
+        outputFile.transactionHash = nftData.transactionHash;
+        // outputFile.tokenId = nftData.tokenId;
+        // outputFile.tokenURI = ipfsUrl;
+      }
+
+      // Save updated document
+      await document.save();
+    }
+
+    // Create payment
     const payment = new Payment({
       orderCode: generateOrderCode(),
       amount: document.notarizationService.price * document.amount,
@@ -618,7 +665,7 @@ const approveSignatureByNotary = async (documentId, userId) => {
 
     await payment.save();
 
-    // Create a payment link using PayOS
+    // Generate payment link
     const paymentLinkResponse = await payOS.createPaymentLink({
       orderCode: payment.orderCode,
       amount: payment.amount,
@@ -630,14 +677,13 @@ const approveSignatureByNotary = async (documentId, userId) => {
     payment.checkoutUrl = paymentLinkResponse.checkoutUrl;
     await payment.save();
 
-    console.log(paymentLinkResponse);
-
+    // Update document with payment details
     document.payment = payment._id;
     document.checkoutUrl = paymentLinkResponse.checkoutUrl;
     document.orderCode = payment.orderCode;
     await document.save();
-    console.log(document);
 
+    // Update status tracking
     await StatusTracking.updateOne(
       { documentId },
       {
@@ -646,6 +692,7 @@ const approveSignatureByNotary = async (documentId, userId) => {
       }
     );
 
+    // Record approval history
     const approveHistory = new ApproveHistory({
       userId,
       documentId,
@@ -653,15 +700,14 @@ const approveSignatureByNotary = async (documentId, userId) => {
       afterStatus: 'completed',
     });
 
+    // Update request approval status
     requestSignature.approvalStatus.notary = {
       approved: true,
       approvedAt: new Date(),
     };
 
     await requestSignature.save();
-
     await approveHistory.save();
-
     const user = await Document.findOne({ _id: documentId }, 'requesterInfo.email');
     if (!user) {
       console.log('This is email', user);
@@ -671,14 +717,14 @@ const approveSignatureByNotary = async (documentId, userId) => {
     await emailService.sendPaymentEmail(user.requesterInfo.email, documentId, paymentLinkResponse);
 
     return {
-      message: 'Notary approved and signed the document successfully',
+      message: 'Notary approved and minted NFTs successfully',
       documentId,
     };
   } catch (error) {
     if (error instanceof ApiError) {
       throw error;
     }
-    console.error('Error approve signature by notary:', error.message);
+    console.error('Error approving signature by notary:', error.message);
     throw new ApiError(httpStatus.INTERNAL_SERVER_ERROR, 'Failed to approve signature by notary');
   }
 };
